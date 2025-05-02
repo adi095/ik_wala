@@ -7,7 +7,7 @@ from RRT_star import RRTStarPlanner
 
 class ExampleController:
     def __init__(self):
-        # no optimized model data in this example
+        # Uses sampling-based RRT for motion planning
         pass
 
     def run(self, env, goal_poses):
@@ -15,7 +15,8 @@ class ExampleController:
         # using RRT* planner to generate the trajectory
 
         # get starting angles for trajectory
-        start_config = env.get_current_angles()
+        init_angles = env.get_current_angles()
+        trajectory = []
 
         # Assuming goal_poses is a dictionary, we take the first goal pose
         # Extract the position of the first goal from goal_poses
@@ -28,7 +29,7 @@ class ExampleController:
         sample_rate = 5  # 5% goal-biased sampling
 
         # Initialize the RRT* Planner
-        planner = RRTStarPlanner(start_config, goal_config, obstacles, random_area, stepsize, sample_rate, env)
+        planner = RRTStarPlanner(init_angles, goal_config, obstacles, random_area, stepsize, sample_rate, env)
         
         # Generate the path using the RRT* planner
         path = planner.planning()
