@@ -75,7 +75,7 @@ env.goto_position(sim_joint_angles_grasp, duration=2.0)
 
 # === Step 3: Close the gripper to pick up the block ===
 sim_joint_angles_grasp["m6"] = -20  # Close the gripper (adjust value based on your gripper's range)
-env.goto_position(sim_joint_angles_grasp, duration=1.0)
+env.goto_position(sim_joint_angles_grasp, duration=10.0)
 
 # === Step 4: Lift the arm with the block ===
 target_pos_lift = np.array(target_pos)
