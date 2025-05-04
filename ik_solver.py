@@ -1,137 +1,109 @@
+import cv2
 import numpy as np
-import pybullet as pb
-import matplotlib.pyplot as pt
-import evaluation as ev
+import ikpy.chain
+import transformations as tf
+import tempfile
 from simulation import SimulationEnvironment
 
-class IKSolver:
-    def __init__(self, env):
-        self.env = env
-        self.robot_id = env.robot_id
+# === PATCH URDF IN MEMORY (continuous -> revolute) ===
+with open("poppy_ergo_jr.pybullet.urdf", "r") as f:
+    urdf_text = f.read()
+urdf_text = urdf_text.replace('type="continuous"', 'type="revolute"')
+with tempfile.NamedTemporaryFile(delete=False, suffix=".urdf", mode='w') as tmp_urdf:
+    tmp_urdf.write(urdf_text)
+    patched_urdf_path = tmp_urdf.name
 
-    def calculate_ik(self, position, orientation_euler):
-        orientation_quat = pb.getQuaternionFromEuler(orientation_euler)
-        gripper_index = self.env.joint_index['m6']
-        joint_angles = pb.calculateInverseKinematics(
-            self.robot_id,
-            gripper_index,
-            position,
-            targetOrientation=orientation_quat,
-        )
-        
-        print("Joint Angles:", joint_angles)
-        
-        return joint_angles
-    
-    
-    
+# === Load IK chain ===
+ik_chain = ikpy.chain.Chain.from_urdf_file(patched_urdf_path)
 
-#     calculateInverseKinematics(
-#     bodyUniqueId, endEffectorLinkIndex, targetPosition,
-#     targetOrientation=QUATERNION_DEFAULT, lowerLimits=None, upperLimits=None, jointRanges=None,
-#     restPoses=None, solver=PYBULLET, residualThreshold=0.0001, maxNumIterations=50,
-#     useAllMotors=False, maxVelocity=None, physicsClientId=0
-# )
+# === Initialize simulation ===
+env = SimulationEnvironment()  # Removed debug=True
+joint_names = [info[0] for info in env.get_joint_info() if info[4] is not None]
 
-        
-#     # def set_gripper(self, close=True):
-#     #     pos = -0.1 if close else 0.1
-#     #     gripper_index = self.env.joint_index["m6"]
-#     #     pb.setJointMotorControl2(
-#     #         self.robot_id, gripper_index, pb.POSITION_CONTROL, targetPosition=pos
-#     #     )
+# === Add a block and let it settle ===
+block_pos = (0.0, -0.15, 0.015)  # Slightly above ground
+block_quat = (1, 0, 0, 0)       # No rotation
+block_label = env._add_block(loc=block_pos, quat=block_quat)
+env.settle(1.0)
 
-#     def move_arm(self, position, orientation_euler, duration=2):
-#         joint_angles = self.calculate_ik(position, orientation_euler)
-#         joint_dict = {
-#             self.env.joint_name[i]: joint_angles[i] * 180 / np.pi
-#             for i in range(len(joint_angles))
-#         }
-#         self.env.goto_position(joint_dict, duration)
-#         ee_pos = self.get_end_effector_position()
-#         print("\n--- joint Check ---")
-#         print(f"Target:   {np.round(position, 4)}")
-#         print(f"Achieved: {np.round(ee_pos, 4)}")
-#         print(f"Error:    {np.linalg.norm(np.array(position) - np.array(ee_pos)):.4f}")
+# === Get the block pose ===
+target_pos, target_quat = env.get_block_pose(block_label)
+target_rot = tf.quaternion_matrix(target_quat)[:3, :3]
 
-#     def get_end_effector_position(self):
-    
-#        link_state = pb.getLinkState(self.robot_id, self.env.num_joints - 1)
-#        position = link_state[4]  # World position of link frame (com)
-#        return position    
+# === Step 1: Position above the block ===
+target_pos_above = np.array(target_pos)
+target_pos_above[2] += 0.0  # 1 cm above the block
 
-#     def execute_ik(self, block_label, goal_position):
-#         lift_offset = 0.01
-#         block_pos, block_ori = self.env.get_block_pose(block_label)
-#         block_euler = pb.getEulerFromQuaternion(block_ori)
+# Solve IK to position above the block
+ik_angles = ik_chain.inverse_kinematics(
+    target_position=target_pos_above,
+    target_orientation=target_rot
+)
 
-#         # Move above block
-#         above_block = (block_pos[0], block_pos[1], block_pos[2] + lift_offset)
-#         self.move_arm(above_block, block_euler)
+# Map IK angles to simulation format
+sim_joint_angles = {
+    name: np.degrees(ik_angles[i + 1])
+    for i, name in enumerate(joint_names) if i + 1 < len(ik_angles)
+}
+#sim_joint_angles["m6"] = 0  # Keep gripper open
 
-#         # Move down to block
-#         self.move_arm(block_pos, block_euler)
+print("Target (above block):", target_pos_above)
+print("Joint angles (deg):", sim_joint_angles)
 
-#         # # Close gripper
-#         # self.set_gripper(close=True)
-#         # self.env.settle(2)
+# Move to position above the block
+env.goto_position(sim_joint_angles, duration=3.0)
 
-#         # # Lift block
-#         # self.move_arm(above_block, block_euler)
+# === Step 2: Lower the arm to grasp the block ===
+target_pos_grasp = np.array(target_pos)  # At the block's height (no Z offset)
+ik_angles_grasp = ik_chain.inverse_kinematics(
+    target_position=target_pos_grasp,
+    target_orientation=target_rot
+)
 
-#         # # Move above goal
-#         # above_goal = (goal_position[0], goal_position[1], goal_position[2] + lift_offset)
-#         # self.move_arm(above_goal, block_euler)
+# Map IK angles for grasping position
+sim_joint_angles_grasp = {
+    name: np.degrees(ik_angles_grasp[i + 1])
+    for i, name in enumerate(joint_names) if i + 1 < len(ik_angles_grasp)
+}
+#sim_joint_angles_grasp["m6"] = 0  # Gripper still open
 
-#         # # Move down to goal
-#         # self.move_arm(goal_position, block_euler)
+print("Target (grasp block):", target_pos_grasp)
+print("Joint angles (deg):", sim_joint_angles_grasp)
 
-#         # # Open gripper
-#         # self.set_gripper(close=False)
-#         # self.env.settle(2)
+# Lower the arm to the block
+env.goto_position(sim_joint_angles_grasp, duration=2.0)
 
-#         # # Retreat
-#         # self.move_arm(above_goal, block_euler)
+# === Step 3: Close the gripper to pick up the block ===
+sim_joint_angles_grasp["m6"] = -20  # Close the gripper (adjust value based on your gripper's range)
+env.goto_position(sim_joint_angles_grasp, duration=10.0)
 
-if __name__ == "__main__":
-    env = SimulationEnvironment(show=True)
-    ik_solver = IKSolver(env)
+# === Step 4: Lift the arm with the block ===
+target_pos_lift = np.array(target_pos)
+target_pos_lift[2] += 0.05  # Lift 5 cm above the initial block position
+ik_angles_lift = ik_chain.inverse_kinematics(
+    target_position=target_pos_lift,
+    target_orientation=target_rot
+)
 
-    
-     # Define a simple target for testing
-    target_position = [0.5, 0.0, 0.2]  # Target position in front of the robot
-    target_orientation_euler = [0, 0, 0]  # No rotation (straight orientation)
+# Map IK angles for lifting
+sim_joint_angles_lift = {
+    name: np.degrees(ik_angles_lift[i + 1])
+    for i, name in enumerate(joint_names) if i + 1 < len(ik_angles_lift)
+}
+sim_joint_angles_lift["m6"] = -20  # Keep gripper closed
 
-    # Call the IK solver with the test target
-    joint_angles = ik_solver.calculate_ik(target_position, target_orientation_euler)
-    
-    
-    tower_poses = ev.get_tower_base_poses(half_spots=3)
-    # Add a test block
-    loc, quat = tower_poses[1]
-    loc = loc[:2] + (0.011,)
-    label = env._add_block(loc, quat, side=0.02)
-    env.settle(1.)
+print("Target (lift block):", target_pos_lift)
+print("Joint angles (deg):", sim_joint_angles_lift)
 
-    input("[Enter] to continue ...")
-    
-    # Set goal
-    goal_loc, goal_quat = tower_poses[0]
-    goal_loc = goal_loc[:2] + (0.01,)
-    goal_poses = {label: (goal_loc, goal_quat)}
+# Lift the arm with the block
+env.goto_position(sim_joint_angles_lift, duration=3.0)
 
-#     # Run IK pick and place
-#     ik_solver.execute_ik(label, goal_loc)
+# === Capture frame ===
+rgba, _, _ = env.get_camera_image()
+frame_bgr = cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR)
+cv2.imshow("Result", frame_bgr)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
 
-#     # Evaluate
-#     accuracy, loc_errors, rot_errors = ev.evaluate(env, goal_poses)
-#     env.close()
-
-#     # Print results
-#     print(f"\n{int(100 * accuracy)}% of blocks near correct goal positions")
-#     print(f"mean|max location error = {np.mean(loc_errors):.3f}|{np.max(loc_errors):.3f}")
-#     print(f"mean|max rotation error = {np.mean(rot_errors):.3f}|{np.max(rot_errors):.3f}")
-
-
-
-
+# === Cleanup ===
+env.close()
