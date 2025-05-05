@@ -19,9 +19,18 @@ ik_chain = ikpy.chain.Chain.from_urdf_file(patched_urdf_path)
 # === Initialize simulation ===
 env = SimulationEnvironment()  # Removed debug=True
 joint_names = [info[0] for info in env.get_joint_info() if info[4] is not None]
+joint_limits = [
+    (-2.6, 2.6),   # m1
+    (-1.6, 1.6),   # m2
+    (-2.2, 0.0),   # m3
+    (-1.5, 1.5),   # m4
+    (-2.0, 2.0),   # m5
+    (-1.0, 1.0),   # m6 (gripper)
+]
+
 
 # === Add a block and let it settle ===
-block_pos = (0.0, -0.15, 0.015)  # Slightly above ground
+block_pos = (0.0, -0.15, 0.0)  # Slightly above ground
 block_quat = (1, 0, 0, 0)       # No rotation
 block_label = env._add_block(loc=block_pos, quat=block_quat)
 env.settle(1.0)
@@ -32,7 +41,7 @@ target_rot = tf.quaternion_matrix(target_quat)[:3, :3]
 
 # === Step 1: Position above the block ===
 target_pos_above = np.array(target_pos)
-target_pos_above[2] += 0.0  # 1 cm above the block
+target_pos_above[2] += -0.05  # 1 cm above the block
 
 # Solve IK to position above the block
 ik_angles = ik_chain.inverse_kinematics(
@@ -71,7 +80,7 @@ print("Target (grasp block):", target_pos_grasp)
 print("Joint angles (deg):", sim_joint_angles_grasp)
 
 # Lower the arm to the block
-env.goto_position(sim_joint_angles_grasp, duration=2.0)
+env.goto_position(sim_joint_angles_grasp, duration=10.0)
 
 # === Step 3: Close the gripper to pick up the block ===
 sim_joint_angles_grasp["m6"] = -20  # Close the gripper (adjust value based on your gripper's range)
